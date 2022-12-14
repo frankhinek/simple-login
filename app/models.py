@@ -231,6 +231,8 @@ class AuditLogActionEnum(EnumE):
     logged_as_user = 6
     extend_subscription = 7
     download_provider_complaint = 8
+    disable_user = 9
+    enable_user = 10
 
 
 class Phase(EnumE):
@@ -926,7 +928,7 @@ class User(Base, ModelMixin, UserMixin, PasswordOracle):
     def two_factor_authentication_enabled(self) -> bool:
         return self.enable_otp or self.fido_enabled()
 
-    def get_communication_email(self) -> (Optional[str], str, bool):
+    def get_communication_email(self) -> (Optional[Alias], str, bool):
         """
         Return
         - the email that user uses to receive email communication. None if user unsubscribes from newsletter
@@ -940,10 +942,10 @@ class User(Base, ModelMixin, UserMixin, PasswordOracle):
                     unsub = UnsubscribeEncoder.encode(
                         UnsubscribeAction.DisableAlias, alias.id
                     )
-                    return alias.email, unsub.link, unsub.via_email
+                    return alias, unsub.link, unsub.via_email
                 # alias disabled -> user doesn't want to receive newsletter
                 else:
-                    return None, None, False
+                    return None, "", False
             else:
                 # do not handle http POST unsubscribe
                 if config.UNSUBSCRIBER:
@@ -956,7 +958,7 @@ class User(Base, ModelMixin, UserMixin, PasswordOracle):
                         True,
                     )
 
-        return None, None, False
+        return None, "", False
 
     def available_sl_domains(self) -> [str]:
         """
@@ -1457,6 +1459,7 @@ class Alias(Base, ModelMixin):
                 new_alias.custom_domain_id = custom_domain.id
 
         Session.add(new_alias)
+        DailyMetric.get_or_create_today_metric().nb_alias += 1
 
         if commit:
             Session.commit()
@@ -2892,6 +2895,34 @@ class Metric2(Base, ModelMixin):
     nb_app = sa.Column(sa.Float, nullable=True)
 
 
+class DailyMetric(Base, ModelMixin):
+    """
+    For storing daily event-based metrics.
+    The difference between DailyEventMetric and Metric2 is Metric2 stores the total
+    whereas DailyEventMetric is reset for a new day
+    """
+
+    __tablename__ = "daily_metric"
+    date = sa.Column(sa.Date, nullable=False, unique=True)
+
+    # users who sign up via web without using "Login with Proton"
+    nb_new_web_non_proton_user = sa.Column(
+        sa.Integer, nullable=False, server_default="0", default=0
+    )
+
+    nb_alias = sa.Column(sa.Integer, nullable=False, server_default="0", default=0)
+
+    @staticmethod
+    def get_or_create_today_metric() -> DailyMetric:
+        today = arrow.utcnow().date()
+        daily_metric = DailyMetric.get_by(date=today)
+        if not daily_metric:
+            daily_metric = DailyMetric.create(
+                date=today, nb_new_web_non_proton_user=0, nb_alias=0
+            )
+        return daily_metric
+
+
 class Bounce(Base, ModelMixin):
     """Record all bounces. Deleted after 7 days"""
 
@@ -3146,6 +3177,26 @@ class AdminAuditLog(Base):
             action=AuditLogActionEnum.download_provider_complaint.value,
             model="ProviderComplaint",
             model_id=complaint_id,
+            data={},
+        )
+
+    @classmethod
+    def disable_user(cls, admin_user_id: int, user_id: int):
+        cls.create(
+            admin_user_id=admin_user_id,
+            action=AuditLogActionEnum.disable_user.value,
+            model="User",
+            model_id=user_id,
+            data={},
+        )
+
+    @classmethod
+    def enable_user(cls, admin_user_id: int, user_id: int):
+        cls.create(
+            admin_user_id=admin_user_id,
+            action=AuditLogActionEnum.enable_user.value,
+            model="User",
+            model_id=user_id,
             data={},
         )
 

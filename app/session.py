@@ -2,9 +2,9 @@ import uuid
 from typing import Optional
 
 import flask
-import limits.storage
 from flask import current_app, session
 from flask_login import logout_user
+
 
 try:
     import cPickle as pickle
@@ -88,10 +88,15 @@ class RedisSessionStore(SessionInterface):
         secure = self.get_cookie_secure(app)
         expires = self.get_expiration_time(app, session)
         val = pickle.dumps(dict(session))
+        ttl = int(app.permanent_session_lifetime.total_seconds())
+        # Only 5 minutes for non-authenticated sessions.
+        # We need to keep the non-authenticated ones because the csrf token is stored in the session.
+        if "_user_id" not in session:
+            ttl = 300
         self._redis_w.setex(
             name=self._get_key(session.session_id),
             value=val,
-            time=int(app.permanent_session_lifetime.total_seconds()),
+            time=ttl,
         )
         signed_session_id = self._get_signer(app).sign(
             itsdangerous.want_bytes(session.session_id)
@@ -104,21 +109,6 @@ class RedisSessionStore(SessionInterface):
             domain=domain,
             path=path,
             secure=secure,
-        )
-
-
-def set_redis_session(app: flask.Flask, redis_url: str):
-    if redis_url.startswith("redis://"):
-        storage = limits.storage.RedisStorage(redis_url)
-        app.session_interface = RedisSessionStore(storage.storage, storage.storage, app)
-    elif redis_url.startswith("redis+sentinel://"):
-        storage = limits.storage.RedisSentinelStorage(redis_url)
-        app.session_interface = RedisSessionStore(
-            storage.storage, storage.storage_slave, app
-        )
-    else:
-        raise RuntimeError(
-            f"Tried to set_redis_session with an invalid redis url: ${redis_url}"
         )
 
 
